@@ -1,0 +1,199 @@
+---
+title: "Human Activity Recognition - Practical Machine Learning"
+author: "bici-sancta"
+date: "25-jul-2015"
+output: "html_document"
+---
+
+###  Note of appreciation
+
+All of the data used in this report was provided by : 
+http://groupware.les.inf.puc-rio.br/har
+
+###  Executive Summary
+
+The project goal is to build a model, using machine learning techniques, to identify (correctly) from the provided dataset when the participants 'correctly' (according to an on-site subject matter expert) performed a bicep curl weight lifting exercise.  
+
+### Data ingestion / cleaning
+
+The raw data for this evaluation is loaded as follows:
+```{r}  
+pml_train <- read.csv("pml-training.csv", na.strings=c("", "NA", "#DIV/0!"))
+pml_essai <- read.csv("pml-testing.csv", na.strings=c("", "NA", "#DIV/0!"))
+# .... note : 3 characters provided for na.strings, after 1st inspection of data files
+```
+
+Several data columns have high percentage missing or corrupt data. This is method used to delete these columns from the data set ...  
+
+```{r}  
+# ... -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+# ... clean up the data set
+# ...   delete the columns that have more than 25% missing data
+# ... -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+
+rows <- dim(pml_train)[1]
+cols <- dim(pml_train)[2]
+names_trn <- names(pml_train)
+
+rmv <- NULL
+ii <- 1
+while (ii <= cols)
+{
+  na_cnt <- sum(is.na(pml_train[,ii]))
+  if (na_cnt / rows > 0.25)
+  {
+#    print (paste (ii, names_trn[ii], ":", na_cnt, na_cnt/rows) )
+    rmv <- c(rmv, ii)
+  }
+  ii <- ii + 1
+}
+```
+
+Starting data frame dimensions : `r dim(pml_train)`
+
+`r pml_train[rmv] <- list(NULL)`
+
+After columns deleted data frame dimensions : `r dim(pml_train)`  
+
+### Initial Model & Parameter Downselection  
+
+From reviewing the remaining `r dim(pml_train)[2]` data columns, we can see that several of them are either participant identification, time recording of when the experiments were performed, or other adminsitrative information that are not good candidates for building a robust predictive model for other data sets. Thus, after inspection, the dataset for evaluation includes 52 data columns avalable for model building.
+
+As a first step to identify useful data parameters for a final model, an intial random forest model is built using all of the data columns and just a small subset of the availble training data set, as a means to downselect to the most relevant variables to support a good predictive model. This is accomplsihed with the following code segments ....   
+
+
+```{r}  
+
+# ... some parallel processing functionality ... customize as appropriate for local use
+library(doParallel)
+registerDoParallel(cores = 3) 
+
+library(caret)
+library(ggplot2)
+library(rpart)
+
+# ... random forest with caret package
+# ... all 52 available columns, 1% of training data
+
+set.seed(13579)
+
+inTrain <- createDataPartition(y = pml_train$classe, p = 0.01, list = FALSE)
+rf_train <- pml_train[inTrain,]
+rf_test <- pml_train[-inTrain,]
+
+rf_fit <- train (classe ~
+                   roll_arm + pitch_arm + yaw_arm + total_accel_arm
+                 + gyros_arm_x + gyros_arm_y + gyros_arm_z
+                 + accel_arm_x + accel_arm_y + accel_arm_z
+                 + magnet_arm_x + magnet_arm_y + magnet_arm_z
+                 + roll_dumbbell + pitch_dumbbell + yaw_dumbbell + total_accel_dumbbell
+                 + gyros_dumbbell_x + gyros_dumbbell_y + gyros_dumbbell_z + total_accel_dumbbell
+                 + accel_dumbbell_x + accel_dumbbell_y + accel_dumbbell_z
+                 + magnet_dumbbell_x + magnet_dumbbell_y + magnet_dumbbell_z
+                 + roll_forearm + pitch_forearm + yaw_forearm + total_accel_forearm
+                 + gyros_forearm_x + gyros_forearm_y + gyros_forearm_z
+                 + accel_forearm_x + accel_forearm_y + accel_forearm_z
+                 + magnet_forearm_x + magnet_forearm_y + magnet_forearm_z
+                 + roll_belt + pitch_belt + yaw_belt + total_accel_belt
+                 + gyros_belt_x + gyros_belt_y + gyros_belt_z
+                 + accel_belt_x + accel_belt_y + accel_belt_z
+                 + magnet_belt_x + magnet_belt_y + magnet_belt_z,
+                 data = rf_train, method = "rf", prox = TRUE)
+
+rf_var_imp <- varImp(rf_fit)
+plot(rf_var_imp, main = "Top 20 Variables of Importance", top = 20)
+```  
+
+
+The above identified 'Top 20' are then used to create a final predictive model ... this time using 25% of the available training data ...
+
+### Build the Final Model ...   
+
+```{r}  
+
+set.seed(112358)
+
+inTrain <- createDataPartition(y = pml_train$classe, p = 0.25, list = FALSE)
+rf_train <- pml_train[inTrain,]
+rf_test <- pml_train[-inTrain,]
+
+# ... downselected to 20 parameters for rf model ...
+
+rf_fit <- train (classe ~ roll_belt
+                 + pitch_forearm
+                 + magnet_dumbbell_z
+                 + roll_forearm
+                 + magnet_dumbbell_y
+                 + yaw_belt
+                 + pitch_belt
+                 + roll_dumbbell
+                 + magnet_arm_x
+                 + accel_dumbbell_y
+                 + accel_forearm_x
+                 + magnet_dumbbell_x
+                 + magnet_belt_z
+                 + magnet_arm_z
+                 + magnet_belt_y
+                 + accel_belt_z
+                 + accel_dumbbell_z
+                 + magnet_forearm_z
+                 + yaw_dumbbell
+                 + gyros_belt_z,
+                 data = rf_train, method = "rf", prox = TRUE)
+
+rf_fit
+```
+
+
+### Error Estimation ...  
+
+Use the test set that was created from the data partitioning as a validation estimator ..
+```{r}
+
+rf_pred <- predict(rf_fit, rf_test)
+
+# .... utility function to calculate prediction error rate (validation sets)
+
+missClass = function(values, prediction)
+{
+  sum(prediction != values) / length(values)
+}
+
+err_rate = round(missClass(rf_test$classe, rf_pred) * 100, 2)
+
+``` 
+
+### Out-of-Sample Error Estimate   
+
+** Thus, out-of-sample error rate %-age for this current model = `r err_rate` **  
+
+We'll accept this as a reasonable first random forest project attempted.
+
+
+### Is it visualizable ??
+
+A few of the 'Top 20' plotted relative to predicted exercise class ...
+
+```{r}
+
+pmlP <- classCenter(rf_train[, c(8, 48)], rf_train$classe, rf_fit$finalModel$prox)
+pmlP <- as.data.frame (pmlP)
+pmlP$classe <- rownames (pmlP)
+p <- qplot(roll_belt, pitch_forearm, col = classe, data = rf_train)
+p + geom_point(aes(x = pitch_forearm, y = roll_belt, col = classe), size = 5, shape = 4, data = pmlP)
+
+
+pmlP <- classCenter(rf_train[, c(46, 47)], rf_train$classe, rf_fit$finalModel$prox)
+pmlP <- as.data.frame (pmlP)
+pmlP$classe <- rownames (pmlP)
+p <- qplot(magnet_dumbbell_z, roll_forearm, col = classe, data = rf_train)
+p + geom_point(aes(x = roll_forearm, y = magnet_dumbbell_z, col = classe), size = 5, shape = 4, data = pmlP)
+```  
+
+
+
+
+
+
+
+
